@@ -1,0 +1,21 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+*.db
+*.sqlite3
+
+.DS_Store
+Thumbs.db
+.idea/
+
+# Local Claude Code config
+.claude/

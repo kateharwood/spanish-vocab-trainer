@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spanish vocabulary</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Spanish vocabulary</h1>
+      <nav class="mode-toggle" id="mode-toggle" aria-label="Mode">
+        <button data-mode="study">Study</button>
+        <button data-mode="cards">Sort</button>
+        <button data-mode="list">List</button>
+      </nav>
+      <span class="progress-label" id="progress-label">Loading…</span>
+    </header>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+
+    <div class="toolbar" id="toolbar" hidden>
+      <div class="filter-nav">
+        <div class="filters" id="filters"></div>
+      </div>
+      <div class="toolbar-right">
+        <input
+          type="search"
+          id="search"
+          placeholder="Search Spanish or English…"
+          autocomplete="off"
+        />
+        <button id="undo" class="ghost" disabled>Undo</button>
+      </div>
+    </div>
+
+    <div class="assign-bar" id="assign-bar">
+      <div class="selection-count" id="selection-count">No words selected</div>
+      <div class="assignment-actions">
+        <span>Move to:</span>
+        <div class="group-buttons" id="group-buttons"></div>
+      </div>
+      <div class="family-buttons" id="family-buttons">
+        <button id="merge" class="ghost" disabled>Merge</button>
+        <button id="unmerge" class="ghost" disabled>Unmerge</button>
+      </div>
+    </div>
+
+    <main>
+      <section id="study-view">
+        <div class="study-shell">
+          <div class="study-heading">
+            <div class="study-summary" id="study-summary">Loading your session…</div>
+            <div class="study-heading-actions">
+              <button class="ghost" id="show-info" aria-haspopup="dialog">ⓘ How it works</button>
+              <button class="ghost" id="show-progress">Progress</button>
+            </div>
+          </div>
+          <div class="study-card" id="study-card" hidden>
+            <div class="study-card-top">
+              <span class="study-source" id="study-source"></span>
+            </div>
+            <div class="study-prompt" id="study-prompt"></div>
+            <button class="reveal-hint" id="study-reveal">
+              Show Spanish <kbd>space</kbd>
+            </button>
+            <div class="study-answer" id="study-answer" hidden>
+              <div id="study-answer-variants"></div>
+              <div class="study-suggestion" id="study-suggestion" hidden></div>
+              <div class="study-answer-actions">
+                <span id="study-group-label"></span>
+                <select id="study-group" aria-label="Change this word's group" hidden></select>
+                <button class="ghost" id="study-edit">Edit</button>
+                <button class="ghost" id="study-save" hidden>Save</button>
+                <button class="ghost" id="study-cancel" hidden>Cancel</button>
+              </div>
+            </div>
+            <div class="family-forms" id="study-forms" hidden></div>
+          </div>
+          <div class="rating-buttons" id="rating-buttons" hidden>
+            <button data-rating="again"><b>Again</b><kbd>1</kbd><span></span></button>
+            <button data-rating="hard"><b>Hard</b><kbd>2</kbd><span></span></button>
+            <button data-rating="good"><b>Good</b><kbd>3</kbd><span></span></button>
+            <button data-rating="easy"><b>Easy</b><kbd>4</kbd><span></span></button>
+          </div>
+          <div class="study-message" id="study-message" hidden>
+            <h2 id="study-message-title"></h2>
+            <p id="study-message-body"></p>
+          </div>
+          <button class="ghost study-end" id="study-end" hidden>End session</button>
+        </div>
+      </section>
+
+      <section id="study-progress-view" hidden>
+        <div class="overall-progress-shell">
+          <div class="overall-progress-heading">
+            <div>
+              <span class="study-source">Spaced repetition</span>
+              <h2>Your progress</h2>
+            </div>
+            <div class="overall-progress-actions">
+              <button class="ghost" id="progress-refresh">Refresh</button>
+              <button class="ghost" id="progress-back">Back to study</button>
+            </div>
+          </div>
+          <div class="overall-progress-cards" id="overall-progress-cards"></div>
+          <div class="overall-progress-groups">
+            <h3>Where your started words are</h3>
+            <div class="stage-bar" id="stage-bar"></div>
+            <div class="stage-legend" id="stage-legend"></div>
+          </div>
+          <div class="overall-progress-groups">
+            <h3>Progress by level</h3>
+            <div id="overall-progress-groups"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="card-view" hidden>
+        <div class="card" id="card">
+          <div class="card-meta" id="card-meta"></div>
+          <div class="card-word" id="card-word"></div>
+          <div class="card-english" id="card-english"></div>
+          <div class="family-forms" id="card-forms" hidden></div>
+          <div class="study-suggestion card-suggestion" id="card-suggestion" hidden></div>
+          <button class="reveal-hint" id="reveal-hint">
+            Show English <kbd>space</kbd>
+          </button>
+        </div>
+        <div class="card-nav">
+          <button class="ghost" id="card-prev">← back</button>
+          <span class="card-position" id="card-position"></span>
+          <button class="ghost" id="card-skip">skip →</button>
+        </div>
+        <p class="empty" id="card-empty" hidden>Everything is sorted. Nice work.</p>
+      </section>
+
+      <section id="list-view" hidden>
+        <div class="list-head">
+          <span class="col-rank">#</span>
+          <span class="col-word">Spanish</span>
+          <span class="col-english">English</span>
+          <span class="col-freq">Frequency</span>
+          <span class="col-group">Group</span>
+        </div>
+        <div id="list" class="list"></div>
+        <p class="empty" id="empty" hidden>Nothing here. Try a different filter.</p>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="merge-modal" hidden>
+      <div class="modal">
+        <h2>These words are in different groups</h2>
+        <p class="modal-words" id="merge-modal-words"></p>
+        <p class="modal-question">Which group should the merged word keep?</p>
+        <div class="modal-choices" id="merge-modal-choices"></div>
+        <button class="ghost" id="merge-modal-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="info-modal" hidden>
+      <div class="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="info-title">
+        <div class="info-head">
+          <h2 id="info-title">How studying works</h2>
+          <button class="ghost" id="info-close" aria-label="Close">✕</button>
+        </div>
+
+        <section>
+          <h3>Where the words come from</h3>
+          <p>
+            Every word comes from a list of the ~5,000 most frequent Spanish words,
+            ranked by how often each one appears. The <b>#</b> next to a word is its
+            rank, so <b>#12</b> is the 12th most common word.
+          </p>
+          <p>
+            Variants of one word (<i>negro / negra / negros</i>, or <i>hablar /
+            hablando / hablado</i>) are grouped into a <b>family</b>. A family is one
+            card: you see every English meaning, recall the Spanish, and the rating
+            applies to all of its forms.
+          </p>
+          <p>
+            Only words you sorted into <b>Levels 1–4</b> or <b>Verb practice</b> are
+            studied. Level 0, Bad entries, Don't care, and unsorted words never appear.
+          </p>
+        </section>
+
+        <section>
+          <h3>What goes into a session</h3>
+          <p>A session starts with:</p>
+          <ol>
+            <li><b>Every card that is due</b> — words you've studied before whose next
+              review date has arrived.</li>
+            <li><b>10 new word families</b> you've never studied, picked at random
+              with these chances per pick:</li>
+          </ol>
+          <div class="info-weights" id="info-weights"></div>
+          <p class="info-note">
+            If a level has no unseen words left, its share is split among the levels
+            that still do. Due and new cards are shuffled together. An unfinished
+            session picks up where you left off.
+          </p>
+        </section>
+
+        <section>
+          <h3>How repetition is scheduled</h3>
+          <p>
+            Reviews are scheduled with <b>FSRS</b> (Free Spaced Repetition Scheduler).
+            For each card it tracks how hard the word is for you and how long you're
+            likely to remember it, then schedules the next review for when your odds
+            of remembering it drop to about <b>90%</b>. Each successful review pushes
+            the next one further out; forgetting brings it back sooner.
+          </p>
+          <table class="info-table">
+            <thead><tr><th>Rating</th><th>New word</th><th>Learning / forgotten</th><th>Known word</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>1</kbd> Again</td><td>repeat</td><td>repeat</td><td>repeat, then relearn</td></tr>
+              <tr><td><kbd>2</kbd> Hard</td><td>repeat</td><td>repeat</td><td>a bit sooner</td></tr>
+              <tr><td><kbd>3</kbd> Good</td><td>~3 days</td><td>days</td><td>longer gap</td></tr>
+              <tr><td><kbd>4</kbd> Easy</td><td>~15 days</td><td>days, more</td><td>longest gap</td></tr>
+            </tbody>
+          </table>
+          <p class="info-note">
+            Under each rating button is when you'd see the card again: a number of
+            days, or <b>repeat</b>, which means it comes back <b>later in this same
+            session</b>, after the cards still ahead of it. Repeats never make you
+            wait; when they're all that's left, they come right up.
+          </p>
+        </section>
+
+        <section>
+          <h3>What the progress numbers mean</h3>
+          <p>Every word you've started is in exactly one of these stages:</p>
+          <ul class="info-stages">
+            <li><b>Learning</b> — you've just met or just forgotten the word and it's
+              on a short repeat (minutes) inside the current session. This is
+              normally 0 between sessions, since a session ends once its repeats
+              are done.</li>
+            <li><b>Young</b> — in regular review, but FSRS isn't yet confident
+              you'll remember it three weeks from now.</li>
+            <li><b>Mature</b> — FSRS estimates you'll still have about a 90% chance
+              of remembering it after <b>21 days or more</b> without review (its
+              "stability"). Words get there by being recalled correctly across
+              growing gaps; recalling a word after a long break gets it there
+              fastest.</li>
+          </ul>
+          <p class="info-note">
+            <b>Due now</b>, <b>due in 24 hours</b>, and <b>due this week</b> count
+            started words by when they're next scheduled, whatever their stage.
+          </p>
+        </section>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <footer class="hints" id="hints"></footer>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
