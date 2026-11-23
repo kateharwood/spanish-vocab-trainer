@@ -20,6 +20,7 @@
 
     <div class="toolbar" id="toolbar" hidden>
       <div class="filter-nav">
+        <div class="sections" id="sections" role="tablist" aria-label="Section"></div>
         <div class="filters" id="filters"></div>
       </div>
       <div class="toolbar-right">
@@ -42,6 +43,7 @@
       <div class="family-buttons" id="family-buttons">
         <button id="merge" class="ghost" disabled>Merge</button>
         <button id="unmerge" class="ghost" disabled>Unmerge</button>
+        <button id="archive" class="ghost" disabled>Archive <kbd>a</kbd></button>
       </div>
     </div>
 
@@ -51,7 +53,7 @@
           <div class="study-heading">
             <div class="study-summary" id="study-summary">Loading your session…</div>
             <div class="study-heading-actions">
-              <button class="ghost" id="show-info" aria-haspopup="dialog">ⓘ How it works</button>
+              <button class="ghost" id="show-info" aria-haspopup="dialog">ⓘ How it Works</button>
               <button class="ghost" id="show-progress">Progress</button>
             </div>
           </div>
@@ -75,6 +77,7 @@
               </div>
             </div>
             <div class="family-forms" id="study-forms" hidden></div>
+            <div class="new-word-bar" id="study-new" hidden></div>
           </div>
           <div class="rating-buttons" id="rating-buttons" hidden>
             <button data-rating="again"><b>Again</b><kbd>1</kbd><span></span></button>
@@ -122,6 +125,8 @@
           <div class="card-english" id="card-english"></div>
           <div class="family-forms" id="card-forms" hidden></div>
           <div class="study-suggestion card-suggestion" id="card-suggestion" hidden></div>
+          <div class="new-word-bar" id="card-new" hidden></div>
+          <div class="card-choices" id="card-choices" hidden></div>
           <button class="reveal-hint" id="reveal-hint">
             Show English <kbd>space</kbd>
           </button>
@@ -130,6 +135,7 @@
           <button class="ghost" id="card-prev">← back</button>
           <span class="card-position" id="card-position"></span>
           <button class="ghost" id="card-skip">skip →</button>
+          <button class="ghost card-undo" id="card-undo" disabled>↶ Undo</button>
         </div>
         <p class="empty" id="card-empty" hidden>Everything is sorted. Nice work.</p>
       </section>
@@ -160,54 +166,41 @@
     <div class="modal-backdrop" id="info-modal" hidden>
       <div class="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="info-title">
         <div class="info-head">
-          <h2 id="info-title">How studying works</h2>
+          <h2 id="info-title">How it Works</h2>
           <button class="ghost" id="info-close" aria-label="Close">✕</button>
         </div>
 
         <section>
-          <h3>Where the words come from</h3>
+          <h3>The words</h3>
           <p>
-            Every word comes from a list of the ~5,000 most frequent Spanish words,
-            ranked by how often each one appears. The <b>#</b> next to a word is its
-            rank, so <b>#12</b> is the 12th most common word.
+            Words come from a list of the ~5,000 most common Spanish words, so
+            <b>#12</b> is the 12th most common. Words marked <b>from Claude</b>
+            were added later.
           </p>
           <p>
-            Variants of one word (<i>negro / negra / negros</i>, or <i>hablar /
-            hablando / hablado</i>) are grouped into a <b>family</b>. A family is one
-            card: you see every English meaning, recall the Spanish, and the rating
-            applies to all of its forms.
+            Forms of one word (<i>negro / negras</i>, <i>hablar / hablando</i>)
+            make a <b>family</b>: one card led by its main word, with the other
+            forms hidden until you open them.
           </p>
-          <p>
-            Only words you sorted into <b>Levels 1–4</b> or <b>Verb practice</b> are
-            studied. Level 0, Bad entries, Don't care, and unsorted words never appear.
-          </p>
+          <p>Only <b>Levels 1–4</b> and <b>Verb practice</b> are studied.</p>
         </section>
 
         <section>
-          <h3>What goes into a session</h3>
-          <p>A session starts with:</p>
+          <h3>Each session</h3>
+          <p>You get one session a day, with:</p>
           <ol>
-            <li><b>Every card that is due</b> — words you've studied before whose next
-              review date has arrived.</li>
-            <li><b>10 new word families</b> you've never studied, picked at random
-              with these chances per pick:</li>
+            <li><b>Every word that's due</b> for review</li>
+            <li><b>10 new words</b>, picked at random by level:</li>
           </ol>
           <div class="info-weights" id="info-weights"></div>
-          <p class="info-note">
-            If a level has no unseen words left, its share is split among the levels
-            that still do. Due and new cards are shuffled together. An unfinished
-            session picks up where you left off.
-          </p>
         </section>
 
         <section>
-          <h3>How repetition is scheduled</h3>
+          <h3>Scheduling</h3>
           <p>
-            Reviews are scheduled with <b>FSRS</b> (Free Spaced Repetition Scheduler).
-            For each card it tracks how hard the word is for you and how long you're
-            likely to remember it, then schedules the next review for when your odds
-            of remembering it drop to about <b>90%</b>. Each successful review pushes
-            the next one further out; forgetting brings it back sooner.
+            <b>FSRS</b> schedules each review for the day your chance of
+            remembering the word drops to about <b>90%</b>. Getting it right pushes
+            the next review further out; forgetting brings it back sooner.
           </p>
           <table class="info-table">
             <thead><tr><th>Rating</th><th>New word</th><th>Learning / forgotten</th><th>Known word</th></tr></thead>
@@ -218,34 +211,26 @@
               <tr><td><kbd>4</kbd> Easy</td><td>~15 days</td><td>days, more</td><td>longest gap</td></tr>
             </tbody>
           </table>
-          <p class="info-note">
-            Under each rating button is when you'd see the card again: a number of
-            days, or <b>repeat</b>, which means it comes back <b>later in this same
-            session</b>, after the cards still ahead of it. Repeats never make you
-            wait; when they're all that's left, they come right up.
-          </p>
         </section>
 
         <section>
-          <h3>What the progress numbers mean</h3>
-          <p>Every word you've started is in exactly one of these stages:</p>
+          <h3>Progress</h3>
           <ul class="info-stages">
-            <li><b>Learning</b> — you've just met or just forgotten the word and it's
-              on a short repeat (minutes) inside the current session. This is
-              normally 0 between sessions, since a session ends once its repeats
-              are done.</li>
-            <li><b>Young</b> — in regular review, but FSRS isn't yet confident
-              you'll remember it three weeks from now.</li>
-            <li><b>Mature</b> — FSRS estimates you'll still have about a 90% chance
-              of remembering it after <b>21 days or more</b> without review (its
-              "stability"). Words get there by being recalled correctly across
-              growing gaps; recalling a word after a long break gets it there
-              fastest.</li>
+            <li><b>Learning</b>: on a short repeat this session</li>
+            <li><b>Young</b>: in review, but not yet solid for 3 weeks</li>
+            <li><b>Mature</b>: FSRS expects you'll still remember it 3+ weeks out</li>
           </ul>
-          <p class="info-note">
-            <b>Due now</b>, <b>due in 24 hours</b>, and <b>due this week</b> count
-            started words by when they're next scheduled, whatever their stage.
-          </p>
+        </section>
+
+        <section>
+          <h3>Details</h3>
+          <ul class="info-details">
+            <li>Your rating applies to every form in a family.</li>
+            <li>If a level runs out of new words, its share goes to the others.</li>
+            <li>Due and new words are shuffled together.</li>
+            <li>An unfinished session picks up where you left off.</li>
+            <li>Archived words keep their level but never come up again.</li>
+          </ul>
         </section>
       </div>
     </div>

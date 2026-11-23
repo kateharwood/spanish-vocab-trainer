@@ -10,6 +10,8 @@ create table if not exists words (
     group_code  text,
     family_id   integer,
     alt_english text,
+    archived    boolean not null default false,
+    decided_at  timestamptz,
     updated_at  timestamptz not null default now()
 );
 
@@ -20,6 +22,12 @@ alter table words add column if not exists family_id integer;
 
 -- A secondary meaning shown smaller under the main definition.
 alter table words add column if not exists alt_english text;
+
+-- Archived families keep their level but never come up in study. decided_at
+-- is when you chose to keep or archive a word; until then it comes up with a
+-- halo and both options.
+alter table words add column if not exists archived boolean not null default false;
+alter table words add column if not exists decided_at timestamptz;
 
 alter table words drop constraint if exists words_group_code_check;
 alter table words add constraint words_group_code_check

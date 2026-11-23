@@ -3,6 +3,7 @@
 import random
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
@@ -134,6 +135,11 @@ def build_entries(words: Iterable[Dict]) -> List[Dict]:
                 "alt_english": main["alt_english"],
                 "frequency": sum(word["frequency"] or 0 for word in members) or None,
                 "group_code": members[0].get("group_code"),
+                # Archived families keep their level but never come up in study.
+                "archived": any(word.get("archived") for word in members),
+                # You've chosen to keep studying it or to archive it. Until
+                # then it comes up with a halo and both options.
+                "decided": any(word.get("decided_at") for word in members),
                 "merged": len(members) > 1,
                 # Main word first, then the subfamily in rank order.
                 "variants": variants,
@@ -200,7 +206,7 @@ class StudyService:
         now = now or utcnow()
         entries = [
             entry for entry in build_entries(self.store.list_words())
-            if entry["group_code"] in ACTIVE_GROUPS
+            if entry["group_code"] in ACTIVE_GROUPS and not entry["archived"]
         ]
         cards = self._cards_by_rank()
         groups = []
@@ -289,9 +295,14 @@ class StudyService:
             return self.session_state(active["id"], now)
 
         # One session per calendar day: once today's has ended, the next one
-        # opens at midnight.
+        # opens at midnight. A session counts for the day you finished it too,
+        # so finishing one you started days ago doesn't open another today.
         latest = self.store.get_latest_session()
-        if latest and calendar_days_between(parse_time(latest["started_at"]), now) == 0:
+        if latest and any(
+            latest.get(field)
+            and calendar_days_between(parse_time(latest[field]), now) == 0
+            for field in ("started_at", "completed_at")
+        ):
             return {
                 "status": "done_today",
                 "session_id": latest["id"],
@@ -303,7 +314,7 @@ class StudyService:
         words = self.store.list_words()
         entries = [
             entry for entry in build_entries(words)
-            if entry["group_code"] in ACTIVE_GROUPS
+            if entry["group_code"] in ACTIVE_GROUPS and not entry["archived"]
         ]
         cards = self._cards_by_rank()
         due = [
@@ -369,13 +380,18 @@ class StudyService:
                 labels[name] = "repeat"
         return labels
 
-    def session_state(self, session_id: str, now: Optional[datetime] = None) -> Dict:
+    def session_state(
+        self, session_id: str, now: Optional[datetime] = None,
+        queue: Optional[List[Dict]] = None,
+    ) -> Dict:
+        """The session's next card. `queue` is passed by review(), which has
+        just read and updated it, to save another round trip to the database."""
         now = now or utcnow()
-        active = self.store.get_active_session()
-        if not active or active["id"] != session_id:
-            return {"status": "complete", "session_id": session_id}
-
-        queue = self.store.list_session_queue(session_id)
+        if queue is None:
+            active = self.store.get_active_session()
+            if not active or active["id"] != session_id:
+                return {"status": "complete", "session_id": session_id}
+            queue = self.store.list_session_queue(session_id)
         pending = [row for row in queue if row["completed_at"] is None]
         if not pending:
             self.store.set_session_status(session_id, "completed", iso(now))
@@ -386,18 +402,26 @@ class StudyService:
             }
 
         current = self._next_row(pending, now)
-        words = {word["rank"]: word for word in self.store.list_words()}
+        # Only this card's words and FSRS state, fetched side by side: reading
+        # every word just to show one card made each rating slow.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            words_job = pool.submit(self.store.get_words, current["ranks"])
+            cards_job = pool.submit(self.store.get_study_cards, current["ranks"])
+            words = {word["rank"]: word for word in words_job.result()}
+            cards = {row["rank"]: row for row in cards_job.result()}
         main_rank = main_rank_of(current["ranks"], words)
         variants = main_first(
             [variant_view(words[rank]) for rank in current["ranks"] if rank in words],
             main_rank,
         )
-        cards = self._cards_by_rank()
         return {
             "status": "active",
             "session_id": session_id,
             "queue_id": current["id"],
             "source": current["source"],
+            # Still waiting on keep-or-archive: shown with a halo and both
+            # options, every time it comes up, until you choose.
+            "needs_decision": not any(word.get("decided_at") for word in words.values()),
             "card_key": current["card_key"],
             "ranks": current["ranks"],
             "main_rank": main_rank,
@@ -432,6 +456,14 @@ class StudyService:
             "due": sum(row["source"] == "due" for row in initial),
             "new": sum(row["source"] == "new" for row in initial),
             "repeats": sum(row["source"] == "repeat" for row in queue),
+            # What's still ahead of you, counting down as you review.
+            "left": {
+                source: sum(
+                    row["source"] == source and row["completed_at"] is None
+                    for row in queue
+                )
+                for source in ("due", "new", "repeat")
+            },
         }
 
     def review(
@@ -453,7 +485,7 @@ class StudyService:
         ):
             raise ValueError("That card is not available for review")
 
-        cards = self._cards_by_rank()
+        cards = {row["rank"]: row for row in self.store.get_study_cards(current["ranks"])}
         rating = RATINGS[rating_name]
         rows = []
         next_dates = []
@@ -479,37 +511,50 @@ class StudyService:
                 }
             )
 
-        self.store.upsert_study_cards(rows)
-        self.store.complete_queue_item(queue_id, iso(now))
         next_due = min(next_dates)
-        self.store.insert_review_log(
-            {
+        review_log = {
+            "id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "card_key": current["card_key"],
+            "ranks": current["ranks"],
+            "rating": rating.value,
+            "source": current["source"],
+            "reviewed_at": iso(now),
+            "next_due": iso(next_due),
+        }
+        repeat = None
+        if learning:
+            repeat = {
                 "id": str(uuid.uuid4()),
                 "session_id": session_id,
                 "card_key": current["card_key"],
                 "ranks": current["ranks"],
-                "rating": rating.value,
-                "source": current["source"],
-                "reviewed_at": iso(now),
-                "next_due": iso(next_due),
+                "source": "repeat",
+                "position": max((row["position"] for row in queue), default=-1) + 1,
+                "available_at": iso(next_due),
+                "completed_at": None,
             }
-        )
 
-        if learning:
-            position = max((row["position"] for row in queue), default=-1) + 1
-            self.store.append_session_queue(
-                {
-                    "id": str(uuid.uuid4()),
-                    "session_id": session_id,
-                    "card_key": current["card_key"],
-                    "ranks": current["ranks"],
-                    "source": "repeat",
-                    "position": position,
-                    "available_at": iso(next_due),
-                    "completed_at": None,
-                }
-            )
-        return self.session_state(session_id, now)
+        # These writes don't depend on each other, so they go out together.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            jobs = [
+                pool.submit(self.store.upsert_study_cards, rows),
+                pool.submit(self.store.complete_queue_item, queue_id, iso(now)),
+                pool.submit(self.store.insert_review_log, review_log),
+            ]
+            if repeat:
+                jobs.append(pool.submit(self.store.append_session_queue, repeat))
+            for job in jobs:
+                job.result()
+
+        # The queue as it now stands, without reading it back.
+        queue = [
+            dict(row, completed_at=iso(now)) if row["id"] == queue_id else row
+            for row in queue
+        ]
+        if repeat:
+            queue.append(repeat)
+        return self.session_state(session_id, now, queue=queue)
 
     def update_variant(
         self, rank: int, spanish: str, english: str, alt_english: Optional[str] = None
@@ -555,6 +600,45 @@ class StudyService:
         if group_code in ARCHIVED_GROUPS:
             self.store.complete_pending_for_ranks(session_id, expanded, iso(now))
         return self.session_state(session_id, now)
+
+    def _family_ranks(self, ranks: List[int]) -> List[int]:
+        words = self.store.list_words()
+        by_rank = {word["rank"]: word for word in words}
+        family_keys = {
+            by_rank[rank].get("family_id") or rank for rank in ranks if rank in by_rank
+        }
+        expanded = [
+            word["rank"] for word in words
+            if (word.get("family_id") or word["rank"]) in family_keys
+        ]
+        if not expanded:
+            raise ValueError("Unknown word")
+        return expanded
+
+    def keep(self, ranks: List[int], now: Optional[datetime] = None) -> List[int]:
+        """You chose to keep studying these families: no more halo or prompt."""
+        expanded = self._family_ranks(ranks)
+        self.store.mark_decided(expanded, iso(now or utcnow()))
+        return expanded
+
+    def set_archived(
+        self, ranks: List[int], archived: bool, now: Optional[datetime] = None,
+        reset_decision: bool = False,
+    ) -> List[int]:
+        """Archive or unarchive whole families. Archived words leave any study
+        session under way and are never picked again. Archiving also settles
+        the keep-or-archive choice."""
+        now = now or utcnow()
+        expanded = self._family_ranks(ranks)
+        self.store.set_archived(expanded, archived)
+        if reset_decision:
+            self.store.clear_decided(expanded)
+        if archived:
+            self.store.mark_decided(expanded, iso(now))
+            active = self.store.get_active_session()
+            if active:
+                self.store.complete_pending_for_ranks(active["id"], expanded, iso(now))
+        return expanded
 
     def close_session(self, session_id: str, status: str) -> None:
         if status not in {"completed", "abandoned"}:

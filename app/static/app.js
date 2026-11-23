@@ -15,6 +15,8 @@ const HINTS = {
   study: [
     ["space", "reveal"],
     ["f", "related forms"],
+    ["k", "keep new word"],
+    ["a", "archive it"],
     ["1", "again"],
     ["2", "hard"],
     ["3", "good"],
@@ -28,6 +30,8 @@ const HINTS = {
     ["b", "bad entry"],
     ["d", "don't care"],
     ["v", "verb practice"],
+    ["k", "keep new word"],
+    ["a", "archive"],
     ["→", "skip"],
     ["←", "back"],
     ["⌘Z", "undo"],
@@ -41,6 +45,7 @@ const HINTS = {
     ["d", "don't care"],
     ["v", "verb practice"],
     ["u", "unsort"],
+    ["a", "archive"],
     ["⌘Z", "undo"],
     ["esc", "clear"],
   ],
@@ -55,6 +60,8 @@ const state = {
   groups: [],
   mode: "study",
   filter: "unsorted",
+  // List shows one section at a time: "active" (unarchived) or "archived".
+  section: "active",
   search: "",
   visible: [],
   selected: new Set(),
@@ -116,11 +123,17 @@ const els = {
   cardView: document.getElementById("card-view"),
   empty: document.getElementById("empty"),
   filters: document.getElementById("filters"),
+  sections: document.getElementById("sections"),
+  archive: document.getElementById("archive"),
+  studyNew: document.getElementById("study-new"),
+  cardNew: document.getElementById("card-new"),
+  cardChoices: document.getElementById("card-choices"),
   groupButtons: document.getElementById("group-buttons"),
   assignBar: document.getElementById("assign-bar"),
   selectionCount: document.getElementById("selection-count"),
   search: document.getElementById("search"),
   undo: document.getElementById("undo"),
+  cardUndo: document.getElementById("card-undo"),
   merge: document.getElementById("merge"),
   unmerge: document.getElementById("unmerge"),
   progressFill: document.getElementById("progress-fill"),
@@ -223,10 +236,16 @@ function applyVariantToList(rank, fields) {
   listed.alt_english = main.alt_english;
 }
 
-function counts() {
-  const result = { unsorted: 0 };
+function inSection(word, section = state.section) {
+  return (section === "archived") === Boolean(word.archived);
+}
+
+function counts(section = state.section) {
+  const result = { unsorted: 0, total: 0 };
   state.groups.forEach((g) => (result[g.code] = 0));
   state.words.forEach((w) => {
+    if (!inSection(w, section)) return;
+    result.total += 1;
     if (w.group_code) result[w.group_code] += 1;
     else result.unsorted += 1;
   });
@@ -281,11 +300,11 @@ function groupShortcut(code) {
 /* ---------- shared chrome ---------- */
 
 function renderProgress() {
-  const c = counts();
-  const sorted = state.words.length - c.unsorted;
-  const pct = state.words.length ? (sorted / state.words.length) * 100 : 0;
+  const c = counts("active");
+  const sorted = c.total - c.unsorted;
+  const pct = c.total ? (sorted / c.total) * 100 : 0;
   els.progressFill.style.width = `${pct}%`;
-  els.progressLabel.textContent = `${sorted} of ${state.words.length} sorted`;
+  els.progressLabel.textContent = `${sorted} of ${c.total} sorted`;
 }
 
 function renderFilters() {
@@ -297,7 +316,7 @@ function renderFilters() {
   }[group.code] || group.label);
   const options = [
     { key: "unsorted", label: "Unsorted", count: c.unsorted },
-    { key: "all", label: "All", count: state.words.length },
+    { key: "all", label: "All", count: c.total },
     ...state.groups.map((g) => ({
       key: g.code,
       label: compactLabel(g),
@@ -310,6 +329,18 @@ function renderFilters() {
         `<button data-filter="${o.key}" class="${
           state.filter === o.key ? "active" : ""
         }">${o.label}<span class="count">${o.count.toLocaleString()}</span></button>`
+    )
+    .join("");
+  const archivedCount = state.words.filter((w) => w.archived).length;
+  els.sections.innerHTML = [
+    ["active", "Unarchived", state.words.length - archivedCount],
+    ["archived", "Archived", archivedCount],
+  ]
+    .map(
+      ([key, label, count]) =>
+        `<button data-section="${key}" class="${
+          state.section === key ? "active" : ""
+        }">${label}<span class="count">${count.toLocaleString()}</span></button>`
     )
     .join("");
 }
@@ -360,6 +391,9 @@ function updateAssignBar() {
   const disabled = inCards ? !card : n === 0;
   els.groupButtons.querySelectorAll("button").forEach((b) => (b.disabled = disabled));
   els.undo.disabled = state.undoStack.length === 0;
+  els.cardUndo.disabled = state.undoStack.length === 0;
+  els.archive.innerHTML = `${state.section === "archived" ? "Unarchive" : "Archive"} <kbd>a</kbd>`;
+  els.archive.disabled = inCards || n === 0;
 
   // Merging is a list-mode action: you pick the words that belong together.
   els.merge.disabled = inCards || n < 2;
@@ -377,8 +411,11 @@ function setMode(mode) {
   els.studyProgressView.hidden = mode !== "progress";
   els.cardView.hidden = mode !== "cards";
   els.listView.hidden = mode !== "list";
-  els.toolbar.hidden = mode === "study" || mode === "progress";
-  els.assignBar.hidden = mode === "study" || mode === "progress";
+  // The toolbar (filters, search, Undo) is for the List; Sort keeps its Undo
+  // next to back and skip.
+  els.toolbar.hidden = mode !== "list";
+  // Sort puts its choices on the card itself; the bar is for the List.
+  els.assignBar.hidden = mode !== "list";
 
   if (mode === "study") {
     loadStudy();
@@ -433,7 +470,9 @@ function renderStudyProgress() {
   els.progressLabel.textContent =
     `${progress.completed} reviewed · ${progress.remaining} remaining`;
   els.studySummary.textContent =
-    `${progress.due} due · ${progress.new} new · ${progress.repeats} repeats`;
+    `${progress.left.due} due · ${progress.left.new} new · ${progress.left.repeat} repeat${
+      progress.left.repeat === 1 ? "" : "s"
+    }`;
 }
 
 function renderStudyGroup() {
@@ -479,6 +518,9 @@ function renderStudy() {
     repeat: "Short repeat",
   }[state.study.source];
   els.studySource.textContent = sourceLabel;
+  els.studyCard.classList.toggle("first-seen", Boolean(state.study.needs_decision));
+  els.studyNew.hidden = !state.study.needs_decision || state.studyEditing;
+  els.studyNew.innerHTML = newWordBarHtml(false);
   renderStudyGroup();
   const [main, ...forms] = state.study.variants;
   els.studyPrompt.innerHTML =
@@ -510,7 +552,10 @@ function renderStudy() {
   renderStudyForms(forms);
   els.studyAnswer.hidden = !state.studyRevealed;
   els.studyReveal.hidden = state.studyRevealed;
-  els.ratingButtons.hidden = !state.studyRevealed || state.studyEditing;
+  // Before you reveal, the rating buttons keep their space (just invisible),
+  // so the centered card doesn't jump when they appear.
+  els.ratingButtons.hidden = state.studyEditing;
+  els.ratingButtons.classList.toggle("waiting", !state.studyRevealed);
   els.studyCard.classList.toggle("revealed", state.studyRevealed);
   els.ratingButtons.querySelectorAll("button").forEach((button) => {
     button.querySelector("span").textContent = state.study.intervals[button.dataset.rating];
@@ -983,7 +1028,7 @@ function renderInfoWeights(progress) {
 function buildCardQueue() {
   // Words Claude added (no frequency count) come first, then the frequency
   // list in rank order.
-  const unsorted = state.words.filter((w) => !w.group_code);
+  const unsorted = state.words.filter((w) => !w.group_code && !w.archived);
   state.cardQueue = [
     ...unsorted.filter((w) => !w.frequency),
     ...unsorted.filter((w) => w.frequency),
@@ -1000,7 +1045,10 @@ function currentCard() {
 
 function renderCard() {
   const card = currentCard();
-  const remaining = state.cardQueue.filter((k) => !state.byKey.get(k).group_code).length;
+  const remaining = state.cardQueue.filter((k) => {
+    const entry = state.byKey.get(k);
+    return !entry.group_code && !entry.archived;
+  }).length;
   const done = !card || remaining === 0;
 
   els.card.hidden = done;
@@ -1038,12 +1086,67 @@ function renderCard() {
   els.revealHint.hidden = state.revealed;
   els.card.classList.toggle("revealed", state.revealed);
 
+  // Until you choose to keep or archive a word, it comes up with a halo and
+  // both options, here and in Study.
+  const undecided = !card.decided && !card.archived;
+  els.card.classList.toggle("first-seen", undecided);
+  // The question waits until you've seen the English.
+  els.cardNew.hidden = card.archived ? false : !(undecided && state.revealed);
+  els.cardNew.innerHTML = newWordBarHtml(card.archived);
+
+  // Two steps: keep or archive first, and only a kept word gets a level.
+  const showChoices = state.revealed && !undecided;
+  els.cardChoices.hidden = !showChoices;
+  els.cardChoices.innerHTML = showChoices ? cardChoicesHtml(card) : "";
+
   els.cardPosition.textContent = `${remaining} left to sort`;
   els.cardPrev.disabled = state.cardPos === 0;
   els.cardSkip.disabled = state.cardPos >= state.cardQueue.length - 1;
   updateAssignBar();
   renderSuggestion();
   requestSortSuggestions();
+}
+
+// Where a word can go, grouped by whether you'll study it. Same keys as before.
+const SORT_CHOICES = [
+  {
+    title: "Study it",
+    choices: [
+      ["1", "Level 1"],
+      ["2", "Level 2"],
+      ["3", "Level 3"],
+      ["4", "Level 4"],
+      ["v", "Verbs"],
+    ],
+  },
+  {
+    title: "Don't study",
+    choices: [
+      ["0a", "Know it", "Level 0"],
+      ["0b", "Don't care"],
+      ["n", "Bad entry"],
+    ],
+  },
+];
+
+function cardChoicesHtml(card) {
+  const groups = SORT_CHOICES.map(({ title, choices }) => `
+    <div class="choice-group">
+      <div class="choice-title">${title}</div>
+      <div class="choice-buttons">
+        ${choices.map(([code, label, sub]) => `
+          <button data-group="${code}" style="${groupStyle(code)}"
+            class="${card.group_code === code ? "current" : ""}">
+            <kbd>${groupShortcut(code)}</kbd>
+            <span>${label}${sub ? `<small>${sub}</small>` : ""}</span>
+          </button>`).join("")}
+      </div>
+    </div>`).join("");
+  // Only a word you've come back to has a group to clear.
+  const unsort = card.group_code
+    ? `<button class="choice-unsort" data-group="">Back to unsorted <kbd>u</kbd></button>`
+    : "";
+  return groups + unsort;
 }
 
 function reveal() {
@@ -1062,6 +1165,7 @@ function moveCard(step) {
 /* ---------- list mode ---------- */
 
 function matchesFilter(word) {
+  if (!inSection(word)) return false;
   if (state.filter === "all") return true;
   if (state.filter === "unsorted") return !word.group_code;
   return word.group_code === state.filter;
@@ -1248,8 +1352,12 @@ async function assignEntries(keys, groupCode) {
   if (!keys.length) return;
 
   // Groups live on individual words, so assigning a family touches every variant.
+  // Giving a word a level also counts as choosing to keep studying it.
+  const keep = groupCode !== null;
   const previous = {};
   const ranks = [];
+  const undecide = [];
+  const newlyKept = [];
   keys.forEach((key) => {
     const entry = state.byKey.get(key);
     entry.ranks.forEach((rank) => {
@@ -1257,19 +1365,25 @@ async function assignEntries(keys, groupCode) {
       ranks.push(rank);
     });
     entry.group_code = groupCode;
+    if (keep && !entry.decided) {
+      entry.decided = true;
+      newlyKept.push(key);
+      undecide.push(...entry.ranks);
+    }
   });
-  state.undoStack.push({ previous, mode: state.mode, cardPos: state.cardPos });
+  state.undoStack.push({ previous, undecide, mode: state.mode, cardPos: state.cardPos });
 
   try {
     await api("/api/assign", {
       method: "POST",
-      body: JSON.stringify({ ranks, group_code: groupCode }),
+      body: JSON.stringify({ ranks, group_code: groupCode, keep }),
     });
   } catch (error) {
     keys.forEach((key) => {
       const entry = state.byKey.get(key);
       entry.group_code = previous[entry.ranks[0]];
     });
+    newlyKept.forEach((key) => (state.byKey.get(key).decided = false));
     state.undoStack.pop();
     if (state.mode === "cards") renderCard();
     else applyFilter();
@@ -1407,6 +1521,151 @@ async function unmergeSelection() {
   selectOnly(ranks);
 }
 
+/* ---------- archive ---------- */
+
+// The keep-or-archive bar. A new word shows it every time it comes up until
+// you choose, like a suggested definition. Archived words keep their level
+// but never come up in study; they live under List → Archived.
+function newWordBarHtml(archived) {
+  return archived
+    ? `<span class="new-word-label">Archived</span>
+       <span class="new-word-actions">
+         <button class="ghost" data-archive="false">Unarchive <kbd>a</kbd></button>
+       </span>`
+    : `<span class="new-word-label">New word: keep studying it?</span>
+       <span class="new-word-actions">
+         <button class="new-word-keep" data-keep>Keep <kbd>k</kbd></button>
+         <button class="ghost" data-archive="true">Archive <kbd>a</kbd></button>
+       </span>`;
+}
+
+// `resetDecision` is for undo: unarchiving a word you'd never decided on
+// brings its keep-or-archive prompt back.
+async function saveArchived(keys, archived, resetDecision = false) {
+  const ranks = keys.flatMap((key) => state.byKey.get(key).ranks);
+  await api("/api/archive", {
+    method: "POST",
+    body: JSON.stringify({ ranks, archived, reset_decision: resetDecision }),
+  });
+}
+
+// Archive or unarchive entries from Sort or List, with undo.
+async function setArchived(keys, archived) {
+  if (!keys.length) return;
+  const previous = {};
+  const decided = {};
+  keys.forEach((key) => {
+    const entry = state.byKey.get(key);
+    previous[key] = Boolean(entry.archived);
+    decided[key] = Boolean(entry.decided);
+    entry.archived = archived;
+    if (archived) entry.decided = true;
+  });
+  state.undoStack.push({ archived: previous, decided, mode: state.mode, cardPos: state.cardPos });
+  try {
+    await saveArchived(keys, archived);
+  } catch (error) {
+    keys.forEach((key) => {
+      state.byKey.get(key).archived = previous[key];
+      state.byKey.get(key).decided = decided[key];
+    });
+    state.undoStack.pop();
+    if (state.mode === "cards") renderCard();
+    else applyFilter();
+    notify("Couldn't save that change, so it was undone.");
+  }
+}
+
+async function archiveCard() {
+  const card = currentCard();
+  if (!card) return;
+  const archived = !card.archived;
+  const promise = setArchived([card.key], archived);
+  if (archived) {
+    notify(`Archived “${card.spanish}”`, { error: false });
+    if (state.cardPos < state.cardQueue.length - 1) state.cardPos += 1;
+    state.revealed = false;
+  }
+  renderCard();
+  renderProgress();
+  await promise;
+}
+
+async function archiveSelection() {
+  const keys = [...state.selected];
+  if (!keys.length) return;
+  const archived = state.section !== "archived";
+  const promise = setArchived(keys, archived);
+  const next = nextVisibleAfter(keys);
+  state.selected = new Set(next === null ? [] : [next]);
+  state.anchor = next;
+  state.cursor = next;
+  applyFilter();
+  notify(`${archived ? "Archived" : "Unarchived"} ${keys.length} word${keys.length === 1 ? "" : "s"}`, {
+    error: false,
+  });
+  await promise;
+}
+
+// Draw the eye to the keep-or-archive question when a level key is pressed
+// too early.
+function nudgeKeepOrArchive() {
+  els.cardNew.classList.remove("nudge");
+  void els.cardNew.offsetWidth;
+  els.cardNew.classList.add("nudge");
+}
+
+// Keep studying the sort card: its halo and prompt go away for good, and the
+// level choices appear.
+async function keepCard() {
+  const card = currentCard();
+  if (!card || card.decided || card.archived || !state.revealed) return;
+  card.decided = true;
+  renderCard();
+  try {
+    await api("/api/keep", { method: "POST", body: JSON.stringify({ ranks: card.ranks }) });
+  } catch (error) {
+    card.decided = false;
+    renderCard();
+    notify("Couldn't save that. Try again.");
+  }
+}
+
+async function keepStudyCard() {
+  if (!state.study || state.study.status !== "active" || !state.study.needs_decision) return;
+  const { ranks } = state.study;
+  state.study.needs_decision = false;
+  renderStudy();
+  try {
+    await api("/api/keep", { method: "POST", body: JSON.stringify({ ranks }) });
+    const entry = state.entryByRank.get(ranks[0]);
+    if (entry) entry.decided = true;
+  } catch (error) {
+    if (state.study.ranks === ranks) state.study.needs_decision = true;
+    renderStudy();
+    notify("Couldn't save that. Try again.");
+  }
+}
+
+// In study, a word still waiting on keep-or-archive offers archiving.
+async function archiveStudyCard() {
+  if (!state.study || state.study.status !== "active" || !state.study.needs_decision) return;
+  const { ranks, variants } = state.study;
+  els.studyNew.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    await api("/api/archive", { method: "POST", body: JSON.stringify({ ranks, archived: true }) });
+    const entry = state.entryByRank.get(ranks[0]);
+    if (entry) Object.assign(entry, { archived: true, decided: true });
+    notify(`Archived “${variants[0].spanish}”. It's under List → Archived.`, { error: false });
+    state.study = await api("/api/study/session", { method: "POST" });
+    state.studyRevealed = false;
+    renderStudy();
+  } catch (error) {
+    notify("Couldn't archive that. Try again.");
+    renderStudy();
+  }
+}
+
 /* ---------- undo ---------- */
 
 async function undo() {
@@ -1414,10 +1673,48 @@ async function undo() {
   if (!entry) return;
   const { previous, families, mode, cardPos } = entry;
 
+  if (entry.archived) {
+    // Group by what to restore: archived or not, and whether the
+    // keep-or-archive choice had been made.
+    const groups = new Map();
+    Object.entries(entry.archived).forEach(([key, was]) => {
+      const reset = !entry.decided[key];
+      const id = `${was}:${reset}`;
+      if (!groups.has(id)) groups.set(id, { was, reset, keys: [] });
+      groups.get(id).keys.push(Number(key));
+    });
+    try {
+      for (const { was, reset, keys } of groups.values()) await saveArchived(keys, was, reset);
+    } catch (error) {
+      state.undoStack.push(entry);
+      notify("Couldn't save the undo. Try again.");
+      return;
+    }
+    Object.entries(entry.archived).forEach(([key, was]) => {
+      state.byKey.get(Number(key)).archived = was;
+      state.byKey.get(Number(key)).decided = entry.decided[key];
+    });
+    if (mode === "cards" && state.mode === "cards") {
+      state.cardPos = cardPos;
+      renderCard();
+      renderProgress();
+    } else {
+      applyFilter();
+      const keys = Object.keys(entry.archived).map(Number);
+      state.selected = new Set(keys.filter((k) => visibleIndex(k) !== -1));
+      paintSelection();
+    }
+    return;
+  }
+
   try {
     await api("/api/restore", {
       method: "POST",
-      body: JSON.stringify({ updates: previous, families: families || null }),
+      body: JSON.stringify({
+        updates: previous,
+        families: families || null,
+        undecide: entry.undecide || null,
+      }),
     });
   } catch (error) {
     state.undoStack.push(entry);
@@ -1439,6 +1736,10 @@ async function undo() {
 
   Object.entries(previous).forEach(([rank, group]) => {
     state.entryByRank.get(Number(rank)).group_code = group;
+  });
+  (entry.undecide || []).forEach((rank) => {
+    const restored = state.entryByRank.get(rank);
+    if (restored) restored.decided = false;
   });
 
   if (mode === "cards" && state.mode === "cards") {
@@ -1472,6 +1773,28 @@ els.filters.addEventListener("click", (event) => {
   applyFilter();
 });
 
+els.sections.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  state.section = button.dataset.section;
+  state.selected.clear();
+  state.anchor = null;
+  state.cursor = null;
+  applyFilter();
+});
+
+els.archive.addEventListener("click", archiveSelection);
+els.studyNew.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (event.target.closest("button[data-keep]")) keepStudyCard();
+  else if (event.target.closest("button[data-archive]")) archiveStudyCard();
+});
+els.cardNew.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (event.target.closest("button[data-keep]")) keepCard();
+  else if (event.target.closest("button[data-archive]")) archiveCard();
+});
+
 els.search.addEventListener("input", () => {
   state.search = els.search.value.trim();
   applyFilter();
@@ -1486,6 +1809,7 @@ els.groupButtons.addEventListener("click", (event) => {
 });
 
 els.undo.addEventListener("click", undo);
+els.cardUndo.addEventListener("click", undo);
 els.merge.addEventListener("click", mergeSelection);
 els.unmerge.addEventListener("click", unmergeSelection);
 els.studyReveal.addEventListener("click", revealStudy);
@@ -1550,6 +1874,12 @@ els.card.addEventListener("click", (event) => {
     toggleForms(toggle.dataset.forms);
   })
 );
+els.cardChoices.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-group]");
+  if (!button) return;
+  event.stopPropagation();
+  assignCard(button.dataset.group || null);
+});
 els.cardPrev.addEventListener("click", () => moveCard(-1));
 els.cardSkip.addEventListener("click", () => moveCard(1));
 
@@ -1581,6 +1911,12 @@ document.addEventListener("keydown", (event) => {
     if (!meta && state.studyRevealed && ["1", "2", "3", "4"].includes(event.key)) {
       event.preventDefault();
       rateStudy(["again", "hard", "good", "easy"][Number(event.key) - 1]);
+      return;
+    }
+    if (!meta && ["a", "k"].includes(event.key) && state.study && state.study.needs_decision) {
+      event.preventDefault();
+      if (event.key === "k") keepStudyCard();
+      else archiveStudyCard();
       return;
     }
     if (!meta && event.key === "f" && state.study && state.study.status === "active"
@@ -1615,12 +1951,26 @@ document.addEventListener("keydown", (event) => {
     }
     if (meta) return;
     const key = event.key.toLowerCase();
+    const waiting = sorting && !sorting.decided && !sorting.archived;
+    if (waiting && (key in KEY_TO_GROUP || key === "u")) {
+      // A level comes after keep-or-archive.
+      event.preventDefault();
+      if (!state.revealed) reveal();
+      nudgeKeepOrArchive();
+      return;
+    }
     if (key in KEY_TO_GROUP) {
       event.preventDefault();
       assignCard(KEY_TO_GROUP[key]);
     } else if (key === "u") {
       event.preventDefault();
       assignCard(null);
+    } else if (key === "a") {
+      event.preventDefault();
+      archiveCard();
+    } else if (key === "k") {
+      event.preventDefault();
+      keepCard();
     }
     return;
   }
@@ -1649,12 +1999,25 @@ document.addEventListener("keydown", (event) => {
   } else if (key === "u") {
     event.preventDefault();
     assignSelection(null);
+  } else if (key === "a") {
+    event.preventDefault();
+    archiveSelection();
   }
 });
 
 new ResizeObserver(() => {
   document.documentElement.style.setProperty("--toolbar-h", `${els.toolbar.offsetHeight}px`);
 }).observe(els.toolbar);
+
+// The fixed bars at the bottom, so Study and Sort can center the card in the
+// space that's actually left.
+const bottomBars = new ResizeObserver(() => {
+  const root = document.documentElement.style;
+  root.setProperty("--hints-real-h", `${els.hints.offsetHeight}px`);
+  root.setProperty("--assign-h", `${els.assignBar.offsetHeight}px`);
+});
+bottomBars.observe(els.hints);
+bottomBars.observe(els.assignBar);
 
 load().catch((error) => {
   els.empty.hidden = false;

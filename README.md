@@ -7,16 +7,33 @@ groups. Sorting is a one-time pass, but any word can be moved between groups lat
 
 | Code | Meaning | Study behavior |
 | --- | --- | --- |
-| `0a` | Level 0 | Archived |
+| `0a` | Level 0 | Never studied |
 | `1` | Level 1 | Shows up sometimes |
 | `2` | Level 2 | Shows up the most |
 | `3` | Level 3 | Shows up the most |
 | `4` | Level 4 | Shows up the most, a few at a time |
-| `n` | Bad entries | Archived |
-| `0b` | Don't care to learn | Archived |
+| `n` | Bad entries | Never studied |
+| `0b` | Don't care to learn | Never studied |
 | `v` | Verb practice: know it, want to drill it | Shows up sometimes |
 
 Words start with no group until they are sorted.
+
+## Archived words
+
+Separately from its group, any word family can be **archived**. It keeps its
+group but never comes up in study again, and leaves a session already under
+way. The List has two sections, **Unarchived** and **Archived**, each with the
+usual group filters inside.
+
+A word you haven't decided on yet comes up with a blue halo and a bar asking
+whether to **Keep** (`k`) studying it or **Archive** (`a`) it, in Sort and in
+Study. Like a suggested definition, the bar keeps coming back until you choose,
+and never again after that; skipping a word doesn't count. In Sort, a level can
+only be picked after Keep. In the List, giving a word a level counts as Keep and
+archiving it counts as Archive. ⌘Z after either brings the question back.
+Unarchive from List → Archived, or from Sort by going back to the card.
+With Supabase, run
+`db/archive_migration.sql` in the SQL editor once.
 
 ## Word families
 
@@ -133,8 +150,12 @@ both.
 
 ### Cards
 
-One unsorted word at a time in rank order, Spanish first. The translation stays
-hidden until you reveal it, so your honest reaction decides the group.
+One unsorted, unarchived word at a time in rank order, Spanish first. The translation stays
+hidden until you reveal it, so your honest reaction decides the group. Once
+revealed, a new word first asks **Keep** or **Archive**; only a kept word goes
+on to a level. The card then shows where the word can go, grouped into **Study it**
+(Levels 1–4, Verbs) and **Don't study** (Know it, Don't care, Bad entry). Click
+one or use its key. Undo sits next to back and skip.
 
 | Key | Result |
 | --- | --- |
@@ -145,6 +166,7 @@ hidden until you reveal it, so your honest reaction decides the group.
 | `b` | Assign to Bad entries, then advance |
 | `v` | Assign to `v`, then advance |
 | `u` | Clear the group, then advance |
+| `a` | Archive (or unarchive), then advance |
 | `→` / `←` | Skip forward, go back |
 | `⌘Z` | Undo and return to that card |
 
@@ -166,7 +188,8 @@ grabbing runs of rows.
 | `b` | Assign the selection to Bad entries |
 | `v` | Assign the selection to `v` |
 | `u` | Clear the group (back to unsorted) |
-| `⌘Z` | Undo the last assignment or merge |
+| `a` | Archive the selection (Unarchive in the Archived section) |
+| `⌘Z` | Undo the last assignment, archive, or merge |
 | `esc` | Clear the selection |
 
 The filter tabs limit the list to unsorted words, everything, or a single group,

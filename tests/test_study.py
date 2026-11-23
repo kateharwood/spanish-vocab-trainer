@@ -279,6 +279,18 @@ class StudyTests(unittest.TestCase):
         tomorrow = service.start_or_resume(start_of_local_day(NOW + timedelta(days=1)))
         self.assertNotEqual(tomorrow["session_id"], first["session_id"])
 
+    def test_finishing_an_old_session_today_counts_as_today(self):
+        self.add_words(["3"] * 11)
+        service = StudyService(self.store, random.Random(2))
+        state = service.start_or_resume(NOW)
+        # Resumed and finished a week later.
+        later = NOW + timedelta(days=7)
+        while state["status"] == "active":
+            state = service.review(state["session_id"], state["queue_id"], "easy", later)
+        self.assertEqual(service.start_or_resume(later + timedelta(minutes=2))["status"], "done_today")
+        # The next day a new one opens.
+        self.assertEqual(service.start_or_resume(later + timedelta(days=1))["status"], "active")
+
     def test_ending_a_session_early_still_counts_for_the_day(self):
         self.add_words(["3", "3"])
         service = StudyService(self.store, random.Random(2))
@@ -287,6 +299,60 @@ class StudyTests(unittest.TestCase):
         again = service.start_or_resume(NOW + timedelta(minutes=5))
         self.assertEqual(again["status"], "done_today")
         self.assertTrue(again["ended"])
+
+    def test_session_counts_go_down_as_you_review(self):
+        self.add_words(["3", "3"])
+        service = StudyService(self.store, random.Random(2))
+        state = service.start_or_resume(NOW)
+        self.assertEqual(state["progress"]["left"], {"due": 0, "new": 2, "repeat": 0})
+        state = service.review(state["session_id"], state["queue_id"], "again", NOW)
+        self.assertEqual(state["progress"]["left"], {"due": 0, "new": 1, "repeat": 1})
+        state = service.review(state["session_id"], state["queue_id"], "easy", NOW)
+        self.assertEqual(state["progress"]["left"], {"due": 0, "new": 0, "repeat": 1})
+        # The totals the session started with don't change.
+        self.assertEqual((state["progress"]["new"], state["progress"]["repeats"]), (2, 1))
+
+    def test_new_words_ask_keep_or_archive_until_you_choose(self):
+        self.add_words(["3"])
+        service = StudyService(self.store, random.Random(2))
+        state = service.start_or_resume(NOW)
+        self.assertTrue(state["needs_decision"])
+        state = service.review(state["session_id"], state["queue_id"], "again", NOW)
+        # Not decided yet, so the repeat still asks.
+        self.assertTrue(state["needs_decision"])
+        service.keep(state["ranks"], NOW)
+        state = service.session_state(state["session_id"], NOW)
+        self.assertFalse(state["needs_decision"])
+
+    def test_archived_words_never_come_up_in_study(self):
+        self.add_words(["3", "3", "4"])
+        service = StudyService(self.store, random.Random(2))
+        service.set_archived([2], True)
+        state = service.start_or_resume(NOW)
+        queue = self.store.list_session_queue(state["session_id"])
+        self.assertEqual(sorted(row["card_key"] for row in queue), [1, 3])
+        self.assertEqual(service.overall_progress(NOW)["total"], 2)
+        # Archiving mid-session takes the word out of the session right away,
+        # and it keeps its level.
+        service.set_archived([3], True, NOW)
+        pending = [r for r in self.store.list_session_queue(state["session_id"])
+                   if r["completed_at"] is None]
+        self.assertEqual([row["card_key"] for row in pending], [1])
+        words = {w["rank"]: w for w in self.store.list_words()}
+        self.assertEqual((words[3]["archived"], words[3]["group_code"]), (True, "4"))
+
+    def test_the_first_keep_or_archive_choice_sticks(self):
+        self.add_words(["3", "3"])
+        service = StudyService(self.store, random.Random(2))
+        service.keep([1], NOW)
+        service.keep([1], NOW + timedelta(days=3))
+        words = {w["rank"]: w for w in self.store.list_words()}
+        self.assertEqual(words[1]["decided_at"], iso(NOW))
+        # Archiving decides too; undoing it with reset_decision asks again.
+        service.set_archived([2], True, NOW)
+        self.assertTrue(self.store.list_words()[1]["decided_at"])
+        service.set_archived([2], False, NOW, reset_decision=True)
+        self.assertIsNone(self.store.list_words()[1]["decided_at"])
 
     def test_repeat_comes_back_after_the_remaining_cards(self):
         self.add_words(["3", "3", "3"])
@@ -368,6 +434,30 @@ class ApiTests(unittest.TestCase):
         self.client.post("/api/assign", json={"ranks": [1, 2, 3], "group_code": "0a"})
         queue = self.store.list_session_queue(session["session_id"])
         self.assertTrue(all(row["completed_at"] for row in queue))
+
+    def test_archive_endpoint_moves_families_and_lists_them(self):
+        self.client.post("/api/merge", json={"ranks": [1, 2]})
+        self.client.post("/api/archive", json={"ranks": [2], "archived": True})
+        entries = {e["key"]: e for e in self.client.get("/api/words").json()["words"]}
+        self.assertTrue(entries[1]["archived"])
+        self.assertTrue(entries[1]["decided"])
+        self.client.post("/api/keep", json={"ranks": [3]})
+        entries = {e["key"]: e for e in self.client.get("/api/words").json()["words"]}
+        self.assertTrue(entries[3]["decided"])
+        self.assertFalse(entries[3]["archived"])
+        self.client.post("/api/archive", json={"ranks": [1], "archived": False})
+        entries = {e["key"]: e for e in self.client.get("/api/words").json()["words"]}
+        self.assertFalse(entries[1]["archived"])
+
+    def test_giving_a_word_a_level_counts_as_keeping_it(self):
+        self.client.post("/api/assign", json={"ranks": [1], "group_code": "3", "keep": True})
+        self.client.post("/api/assign", json={"ranks": [2], "group_code": None, "keep": True})
+        decided = {e["key"]: e["decided"] for e in self.client.get("/api/words").json()["words"]}
+        self.assertEqual(decided, {1: True, 2: False, 3: False})
+        # Undo puts the question back.
+        self.client.post("/api/restore", json={"updates": {"1": "2"}, "undecide": [1]})
+        decided = {e["key"]: e["decided"] for e in self.client.get("/api/words").json()["words"]}
+        self.assertFalse(decided[1])
 
     def test_unmerged_words_become_families_of_one(self):
         self.client.post("/api/merge", json={"ranks": [1, 2]})

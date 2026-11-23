@@ -32,11 +32,15 @@ log = logging.getLogger(__name__)
 class AssignRequest(BaseModel):
     ranks: List[int]
     group_code: Optional[str] = None
+    # Giving a word a level counts as choosing to keep studying it.
+    keep: bool = False
 
 
 class RestoreRequest(BaseModel):
     updates: Dict[int, Optional[str]]
     families: Optional[Dict[int, Optional[int]]] = None
+    # Words whose keep-or-archive choice the undone change made.
+    undecide: Optional[List[int]] = None
 
 
 class MergeRequest(BaseModel):
@@ -68,6 +72,17 @@ class DefinitionDecisionRequest(BaseModel):
 
 class DefinitionRequest(BaseModel):
     families: List[List[int]]
+
+
+class ArchiveRequest(BaseModel):
+    ranks: List[int]
+    archived: bool = True
+    # Undo: bring back the keep-or-archive prompt for words never decided on.
+    reset_decision: bool = False
+
+
+class KeepRequest(BaseModel):
+    ranks: List[int]
 
 
 class WordEditRequest(BaseModel):
@@ -114,12 +129,34 @@ def assign(request: AssignRequest):
         raise HTTPException(status_code=400, detail="Unknown group %s" % request.group_code)
     ranks = ranks_in_families(request.ranks, store.list_words())
     updated = store.assign(ranks, request.group_code)
+    if request.keep and request.group_code is not None:
+        store.mark_decided(ranks, iso(utcnow()))
     # Archived words should stop showing up in a study session already under way.
     if request.group_code is None or request.group_code in ARCHIVED_GROUPS:
         active = store.get_active_session()
         if active:
             store.complete_pending_for_ranks(active["id"], ranks, iso(utcnow()))
     return {"updated": updated, "ranks": ranks}
+
+
+@app.post("/api/archive")
+def archive(request: ArchiveRequest):
+    try:
+        ranks = study.set_archived(
+            request.ranks, request.archived, reset_decision=request.reset_decision
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ranks": ranks, "archived": request.archived}
+
+
+@app.post("/api/keep")
+def keep(request: KeepRequest):
+    """Keep studying these words: their halo and archive prompt go away."""
+    try:
+        return {"ranks": study.keep(request.ranks)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/restore")
@@ -129,6 +166,8 @@ def restore(request: RestoreRequest):
             raise HTTPException(status_code=400, detail="Unknown group %s" % group)
     if request.families is not None:
         store.set_families(request.families)
+    if request.undecide:
+        store.clear_decided(request.undecide)
     return {"updated": store.assign_many(request.updates)}
 
 

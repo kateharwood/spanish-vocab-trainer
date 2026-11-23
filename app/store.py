@@ -8,6 +8,7 @@ import os
 import json
 import sqlite3
 import threading
+import time
 from typing import Dict, Iterable, List, Optional
 
 from dotenv import load_dotenv
@@ -123,6 +124,12 @@ class SqliteStore:
             columns = {row["name"] for row in conn.execute("pragma table_info(words)")}
             if "alt_english" not in columns:
                 conn.execute("alter table words add column alt_english text")
+            if "archived" not in columns:
+                conn.execute(
+                    "alter table words add column archived integer not null default 0"
+                )
+            if "decided_at" not in columns:
+                conn.execute("alter table words add column decided_at text")
             columns = {
                 row["name"]
                 for row in conn.execute("pragma table_info(definition_suggestions)")
@@ -154,9 +161,51 @@ class SqliteStore:
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "select rank, spanish, english, alt_english, frequency, group_code, "
-                "family_id from words order by rank"
+                "family_id, archived, decided_at from words order by rank"
             )
-            return [dict(row) for row in cur.fetchall()]
+            rows = [dict(row) for row in cur.fetchall()]
+            for row in rows:
+                row["archived"] = bool(row["archived"])
+            return rows
+
+    def get_words(self, ranks: List[int]) -> List[Dict]:
+        wanted = set(ranks)
+        return [word for word in self.list_words() if word["rank"] in wanted]
+
+    def set_archived(self, ranks: List[int], archived: bool) -> int:
+        if not ranks:
+            return 0
+        placeholders = ",".join("?" for _ in ranks)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "update words set archived = ? where rank in (%s)" % placeholders,
+                [int(archived)] + ranks,
+            )
+        return len(ranks)
+
+    def clear_decided(self, ranks: List[int]) -> int:
+        if not ranks:
+            return 0
+        placeholders = ",".join("?" for _ in ranks)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "update words set decided_at = null where rank in (%s)" % placeholders, ranks
+            )
+        return len(ranks)
+
+    def mark_decided(self, ranks: List[int], decided_at: str) -> int:
+        """Record that you chose to keep or archive these words. The first
+        decision is the one kept."""
+        if not ranks:
+            return 0
+        placeholders = ",".join("?" for _ in ranks)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "update words set decided_at = ? where decided_at is null and rank in (%s)"
+                % placeholders,
+                [decided_at] + ranks,
+            )
+        return cur.rowcount
 
     def set_family(self, ranks: List[int], family_id: Optional[int]) -> int:
         if not ranks:
@@ -220,6 +269,10 @@ class SqliteStore:
             item["card_data"] = json.loads(item["card_data"])
             result.append(item)
         return result
+
+    def get_study_cards(self, ranks: List[int]) -> List[Dict]:
+        wanted = set(ranks)
+        return [row for row in self.list_study_cards() if row["rank"] in wanted]
 
     def upsert_study_cards(self, rows: Iterable[Dict]) -> int:
         rows = list(rows)
@@ -442,14 +495,54 @@ class SupabaseStore:
             ).execute()
         return len(payload)
 
+    WORD_COLUMNS = (
+        "rank, spanish, english, alt_english, frequency, group_code, family_id"
+    )
+
+    # Until db/archive_migration.sql is run, reads skip the archive columns.
+    # The full query is retried now and then so the migration is picked up
+    # without a restart.
+    _archive_columns_missing_at = 0.0
+
+    def _word_columns(self) -> str:
+        if time.time() - self._archive_columns_missing_at < 300:
+            return self.WORD_COLUMNS
+        return self.WORD_COLUMNS + ", archived, decided_at"
+
+    def _with_word_columns(self, read):
+        columns = self._word_columns()
+        try:
+            return read(columns)
+        except Exception:
+            if columns == self.WORD_COLUMNS:
+                raise
+            self._archive_columns_missing_at = time.time()
+            return read(self.WORD_COLUMNS)
+
     def list_words(self) -> List[Dict]:
+        return self._with_word_columns(self._list_words)
+
+    def get_words(self, ranks: List[int]) -> List[Dict]:
+        """Just these words, for showing one card without reading all of them."""
+        if not ranks:
+            return []
+        return self._with_word_columns(
+            lambda columns: self.client.table("words")
+            .select(columns)
+            .in_("rank", list(ranks))
+            .execute()
+            .data
+            or []
+        )
+
+    def _list_words(self, columns: str) -> List[Dict]:
         words: List[Dict] = []
         page_size = 1000
         start = 0
         while True:
             resp = (
                 self.client.table("words")
-                .select("rank, spanish, english, alt_english, frequency, group_code, family_id")
+                .select(columns)
                 .order("rank")
                 .range(start, start + page_size - 1)
                 .execute()
@@ -459,6 +552,27 @@ class SupabaseStore:
             if len(batch) < page_size:
                 return words
             start += page_size
+
+    def set_archived(self, ranks: List[int], archived: bool) -> int:
+        for start in range(0, len(ranks), 200):
+            self.client.table("words").update({"archived": archived}).in_(
+                "rank", ranks[start : start + 200]
+            ).execute()
+        return len(ranks)
+
+    def clear_decided(self, ranks: List[int]) -> int:
+        for start in range(0, len(ranks), 200):
+            self.client.table("words").update({"decided_at": None}).in_(
+                "rank", ranks[start : start + 200]
+            ).execute()
+        return len(ranks)
+
+    def mark_decided(self, ranks: List[int], decided_at: str) -> int:
+        for start in range(0, len(ranks), 200):
+            self.client.table("words").update({"decided_at": decided_at}).in_(
+                "rank", ranks[start : start + 200]
+            ).is_("decided_at", "null").execute()
+        return len(ranks)
 
     def assign(self, ranks: List[int], group_code: Optional[str]) -> int:
         if not ranks:
@@ -520,6 +634,18 @@ class SupabaseStore:
             if len(batch) < 1000:
                 return rows
             start += 1000
+
+    def get_study_cards(self, ranks: List[int]) -> List[Dict]:
+        if not ranks:
+            return []
+        return (
+            self.client.table("study_cards")
+            .select("rank, card_data, due, last_review, review_count, updated_at")
+            .in_("rank", list(ranks))
+            .execute()
+            .data
+            or []
+        )
 
     def upsert_study_cards(self, rows: Iterable[Dict]) -> int:
         rows = list(rows)
