@@ -1,11 +1,13 @@
 """Persistent FSRS study sessions for word families."""
 
+import os
 import random
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
+from zoneinfo import ZoneInfo
 
 from fsrs import Card, FSRS, Rating, State
 
@@ -42,19 +44,35 @@ def parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(timezone.utc)
 
 
+def local_zone() -> Optional[ZoneInfo]:
+    """Your time zone, which decides where one day ends and the next begins.
+
+    Set APP_TIMEZONE (for example America/New_York) wherever the server's own
+    clock isn't on your time, such as on Vercel, which runs on UTC. Without
+    it, the server's local time zone is used.
+    """
+    name = os.environ.get("APP_TIMEZONE")
+    return ZoneInfo(name) if name else None
+
+
 def start_of_local_day(value: datetime) -> datetime:
-    """Midnight at the start of `value`'s calendar day, in the server's time zone.
+    """Midnight at the start of `value`'s calendar day, in your time zone.
 
     Reviews scheduled days out come due at the start of their day, so a word
     reviewed at 10pm is ready first thing the next day rather than at 10pm.
     """
-    local = value.astimezone()
-    midnight = datetime(local.year, local.month, local.day).astimezone()
+    zone = local_zone()
+    local = value.astimezone(zone)
+    if zone is not None:
+        midnight = datetime(local.year, local.month, local.day, tzinfo=zone)
+    else:
+        midnight = datetime(local.year, local.month, local.day).astimezone()
     return midnight.astimezone(timezone.utc)
 
 
 def calendar_days_between(start: datetime, end: datetime) -> int:
-    return (end.astimezone().date() - start.astimezone().date()).days
+    zone = local_zone()
+    return (end.astimezone(zone).date() - start.astimezone(zone).date()).days
 
 
 def serialize_card(card: Card) -> Dict:

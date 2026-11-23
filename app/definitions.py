@@ -13,8 +13,8 @@ import json
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, wait as wait_for
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ MODEL = "claude-opus-5-5"
 # Suggestions that are settled and should not be requested again. A failed
 # request is retried the next time its word shows up as new.
 SETTLED = {"pending", "accepted", "dismissed", "unchanged"}
+
+# A request recorded as "working" this recently is still in progress (maybe
+# on another server instance). An older one is assumed lost and retried.
+WORKING_FOR = timedelta(minutes=3)
 
 SYSTEM_PROMPT = """\
 You maintain the English side of a Spanish-to-English flashcard deck built \
@@ -168,12 +172,17 @@ class DefinitionHelper:
         store,
         suggest: Optional[Callable[[List[Dict]], Dict]] = None,
         executor: Optional[ThreadPoolExecutor] = None,
+        wait: Optional[bool] = None,
     ):
         self.store = store
         self.suggest = suggest
         self.executor = executor or ThreadPoolExecutor(max_workers=3)
         self._in_flight = set()
         self._lock = threading.Lock()
+        # On Vercel a function can be frozen as soon as it responds, so the
+        # request that asks for suggestions waits for them. Run locally, they
+        # carry on in the background.
+        self.wait = bool(os.environ.get("VERCEL")) if wait is None else wait
 
     @property
     def enabled(self) -> bool:
@@ -182,6 +191,13 @@ class DefinitionHelper:
     def is_in_flight(self, ranks: Iterable[int]) -> bool:
         with self._lock:
             return any(rank in self._in_flight for rank in ranks)
+
+    @staticmethod
+    def _still_working(row: Dict) -> bool:
+        if row["status"] != "working":
+            return False
+        updated = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) - updated < WORKING_FOR
 
     def queue_for_session(self, session_id: str) -> int:
         """Request suggestions for the session's new cards that have none yet."""
@@ -200,10 +216,11 @@ class DefinitionHelper:
         wanted = sorted({rank for ranks in families for rank in ranks})
         settled = {
             row["rank"] for row in self.store.get_suggestions(wanted)
-            if row["status"] in SETTLED
+            if row["status"] in SETTLED or self._still_working(row)
         }
         words = {word["rank"]: word for word in self.store.list_words()}
         queued = 0
+        jobs = []
         for ranks in families:
             if any(rank in settled for rank in ranks):
                 continue
@@ -220,9 +237,34 @@ class DefinitionHelper:
                 if not variants or any(v["rank"] in self._in_flight for v in variants):
                     continue
                 self._in_flight.update(v["rank"] for v in variants)
-            self.executor.submit(self._run, variants)
+            # Recorded in the database so every server instance can tell
+            # Claude is on it. Optional: db/deploy_migration.sql allows it.
+            try:
+                self._mark_working(variants)
+            except Exception:
+                log.warning("Couldn't mark suggestions as working; run db/deploy_migration.sql")
+            jobs.append(self.executor.submit(self._run, variants))
             queued += 1
+        if self.wait:
+            wait_for([job for job in jobs if job is not None])
         return queued
+
+    def _mark_working(self, variants: List[Dict]) -> None:
+        self.store.upsert_suggestions(
+            [
+                {
+                    "rank": v["rank"],
+                    "original_english": v["english"],
+                    "original_alt": v["alt_english"] or None,
+                    "suggested_english": None,
+                    "suggested_alt": None,
+                    "note": "",
+                    "status": "working",
+                    "updated_at": utcnow_iso(),
+                }
+                for v in variants
+            ]
+        )
 
     def _run(self, variants: List[Dict]) -> None:
         try:
@@ -278,7 +320,8 @@ class DefinitionHelper:
         rows = self.store.get_suggestions(ranks)
         return {
             "enabled": self.enabled,
-            "working": self.is_in_flight(ranks),
+            "working": self.is_in_flight(ranks)
+            or any(self._still_working(row) for row in rows),
             "suggestions": [
                 {
                     "rank": row["rank"],

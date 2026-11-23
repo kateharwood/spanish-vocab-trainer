@@ -176,6 +176,30 @@ class DefinitionTests(unittest.TestCase):
             family,
         )
 
+    def test_on_vercel_waits_for_claude_and_shares_working_status(self):
+        # On Vercel the request waits for Claude, and "working" lives in the
+        # database so another server instance can see it.
+        from concurrent.futures import ThreadPoolExecutor
+
+        seen_working = []
+
+        def suggest(variants):
+            other = DefinitionHelper(self.store, lambda v: {}, executor=RunNow())
+            seen_working.append(other.for_ranks([v["rank"] for v in variants])["working"])
+            # Another instance must not ask again while this one is working.
+            self.assertEqual(other.queue_families([[v["rank"] for v in variants]]), 0)
+            return {"variants": [{"rank": 3, "english": "table, desk", "alt_english": "", "changed": True}]}
+
+        helper = DefinitionHelper(
+            self.store, suggest, executor=ThreadPoolExecutor(max_workers=2), wait=True
+        )
+        self.assertEqual(helper.queue_families([[3]]), 1)
+        # Already done when queue_families returns.
+        self.assertEqual(seen_working, [True])
+        result = helper.for_ranks([3])
+        self.assertFalse(result["working"])
+        self.assertEqual(result["suggestions"][0]["suggested_english"], "table, desk")
+
 
 if __name__ == "__main__":
     unittest.main()

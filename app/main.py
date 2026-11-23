@@ -7,13 +7,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app import auth
 from app.store import ARCHIVED_GROUPS, GROUP_LABELS, GROUPS, get_store
 from app.definitions import DefinitionHelper, anthropic_suggester
 from app.study import StudyService, build_entries, iso, utcnow
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-app = FastAPI(title="Spanish vocab sorter")
+app = FastAPI(title="Hasta Cinco Mil")
 store = get_store()
 
 
@@ -24,6 +25,26 @@ async def revalidate_pages(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# Registered last, so it runs first: nothing is served before you sign in.
+app.middleware("http")(auth.require_login)
+
+
+@app.get("/login")
+def login_page():
+    return auth.login_page()
+
+
+@app.post("/login")
+async def login(request: Request):
+    return await auth.login(request)
+
+
+@app.get("/logout")
+def logout():
+    return auth.logout()
+
 study = StudyService(store)
 definitions = DefinitionHelper(store, anthropic_suggester())
 log = logging.getLogger(__name__)
@@ -205,14 +226,9 @@ def unmerge(request: UnmergeRequest):
 
 @app.post("/api/study/session")
 def start_or_resume_study():
-    state = study.start_or_resume()
-    try:
-        definitions.queue_for_session(state["session_id"])
-    except Exception:
-        # Most likely the suggestions table has not been created in Supabase
-        # yet. Studying should never fail because of it.
-        log.exception("Could not queue definition suggestions")
-    return state
+    # The page asks for this session's definition suggestions separately
+    # (/api/definitions/session), so starting to study never waits on Claude.
+    return study.start_or_resume()
 
 
 @app.get("/api/definitions")
@@ -235,6 +251,21 @@ def request_definitions(request: DefinitionRequest):
         # A handful at a time is all the Sort screen needs.
         return {"queued": definitions.queue_families(request.families[:10])}
     except Exception:
+        log.exception("Could not queue definition suggestions")
+        return {"queued": 0}
+
+
+@app.post("/api/definitions/session/{session_id}")
+def request_session_definitions(session_id: str):
+    """Suggestions for every new word in a session. On Vercel this request
+    stays open until Claude has answered; the page doesn't wait for it."""
+    if not definitions.enabled:
+        return {"queued": 0}
+    try:
+        return {"queued": definitions.queue_for_session(session_id)}
+    except Exception:
+        # Most likely the suggestions table has not been created in Supabase
+        # yet. Studying should never fail because of it.
         log.exception("Could not queue definition suggestions")
         return {"queued": 0}
 

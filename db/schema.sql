@@ -87,7 +87,7 @@ create table if not exists definition_suggestions (
     suggested_alt     text,
     note              text not null default '',
     status            text not null
-        check (status in ('pending', 'accepted', 'dismissed', 'unchanged', 'failed')),
+        check (status in ('pending', 'accepted', 'dismissed', 'unchanged', 'failed', 'working')),
     updated_at        timestamptz not null default now()
 );
 

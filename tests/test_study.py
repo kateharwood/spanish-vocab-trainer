@@ -259,6 +259,25 @@ class StudyTests(unittest.TestCase):
                 os.environ["TZ"] = previous
             time.tzset()
 
+    def test_app_timezone_sets_the_day_on_a_utc_server(self):
+        import os
+        from unittest import mock
+
+        from app.study import calendar_days_between
+
+        # Like Vercel: the server is on UTC, you're in New York.
+        with mock.patch.dict(os.environ, {"APP_TIMEZONE": "America/New_York"}):
+            late = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)  # 10pm Nov 9
+            self.assertEqual(
+                start_of_local_day(late), datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc)
+            )
+            # 10pm and 11:30pm New York time are the same day, even though
+            # it's already the next day in UTC.
+            earlier = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)
+            later = datetime(2026, 11, 10, 4, 30, tzinfo=timezone.utc)
+            self.assertEqual(calendar_days_between(datetime(2026, 11, 9, 23, 0, tzinfo=timezone.utc), later), 0)
+            self.assertEqual(calendar_days_between(earlier, later), 0)
+
     def test_only_one_session_per_calendar_day(self):
         self.add_words(["3", "3"])
         service = StudyService(self.store, random.Random(2))

@@ -176,6 +176,11 @@ async function api(path, options) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  if (res.status === 401) {
+    // Signed out (or the password changed): back to the login page.
+    window.location.href = "/login";
+    throw new Error("Signed out");
+  }
   if (!res.ok) throw new Error(`${path} failed: ${res.status}`);
   return res.json();
 }
@@ -443,6 +448,11 @@ async function loadStudy() {
     state.studyRevealed = false;
     state.studyEditing = false;
     renderStudy();
+    // Ask Claude about this session's new words. Not awaited: on Vercel the
+    // request stays open until Claude answers, and cards poll for results.
+    if (state.study.status === "active") {
+      api(`/api/definitions/session/${state.study.session_id}`, { method: "POST" }).catch(() => {});
+    }
   } catch (error) {
     els.studyCard.hidden = true;
     els.studyMessage.hidden = false;

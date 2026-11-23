@@ -1,7 +1,9 @@
-# Spanish vocab sorter
+# Hasta Cinco Mil
 
-The first 1000 Spanish words by frequency, plus a UI for sorting them into study
-groups. Sorting is a one-time pass, but any word can be moved between groups later.
+*Hasta cinco mil*: up to five thousand. About 5,000 of the most common Spanish
+words, plus words Claude added, which you sort into levels and then study a few
+at a time with spaced repetition (FSRS). Sorting is a one-time pass, but any
+word can be moved between levels later.
 
 ## Groups
 
@@ -218,3 +220,30 @@ they are, so it is safe to run repeatedly.
 .venv/bin/python scripts/build_families.py
 .venv/bin/python scripts/build_families.py --apply
 ```
+
+## Deploying to Vercel
+
+The app runs on Vercel as a single Python function (`app/main.py`), with the
+data in Supabase. `vercel.json` gives each request up to 5 minutes, since the
+requests that ask Claude for definitions wait for its answer there.
+
+1. Run `db/deploy_migration.sql` in the Supabase SQL editor once.
+2. In Vercel, **Add New → Project** and import this GitHub repo. No build
+   settings are needed.
+3. Under **Settings → Environment Variables**, add:
+
+   | Name | Value |
+   | --- | --- |
+   | `SUPABASE_URL` | same as your `.env` |
+   | `SUPABASE_SECRET_KEY` | same as your `.env` |
+   | `ANTHROPIC_API_KEY` | same as your `.env` (optional) |
+   | `APP_PASSWORD` | the password for the login page |
+   | `APP_TIMEZONE` | your time zone, e.g. `America/New_York` |
+
+   Without `APP_PASSWORD` the deployed site refuses to run, so it is never
+   public by accident.
+4. Deploy, then under **Settings → Domains** add your domain and set the DNS
+   records Vercel shows at your registrar.
+
+Signing in lasts a year per device. Changing `APP_PASSWORD` signs every device
+out. Run locally without `APP_PASSWORD` and there is no login.
